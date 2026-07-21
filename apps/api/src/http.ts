@@ -16,6 +16,11 @@ export function json(data: unknown, status = 200): Response {
   return Response.json(data, { status });
 }
 
+export function setRequestIdHeader(response: Response, requestId: string): void {
+  // A WebSocket upgrade response has immutable headers in the Workers runtime.
+  if (response.status !== 101) response.headers.set("x-request-id", requestId);
+}
+
 export function pathSegments(pathname: string): string[] {
   return pathname.split("/").filter(Boolean).map(decodeURIComponent);
 }
