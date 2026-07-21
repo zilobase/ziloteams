@@ -1,0 +1,15 @@
+{
+  "name": "@ziloteams/api",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "wrangler deploy --dry-run --config wrangler.jsonc --outdir dist",
+    "dev": "wrangler dev --config wrangler.jsonc",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ziloteams/contracts": "2.0.0"
+  }
+}

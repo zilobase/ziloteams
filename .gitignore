@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+.wrangler/
+.dev.vars
+.env
+*.local
+*.log
+*.tsbuildinfo
+release/
+.*.bun-build
+apps/api/worker-configuration.d.ts

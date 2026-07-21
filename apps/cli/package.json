@@ -1,0 +1,18 @@
+{
+  "name": "@ziloteams/cli",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "bin": { "ziloteams": "src/index.ts" },
+  "scripts": {
+    "dev": "vite-node src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ziloteams/contracts": "2.0.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}

@@ -1,0 +1,3 @@
+OTP_HMAC_KEY=replace-with-at-least-32-random-bytes
+INVITE_HMAC_KEY=replace-with-at-least-32-random-bytes
+FILE_SIGNING_KEY=replace-with-at-least-32-random-bytes

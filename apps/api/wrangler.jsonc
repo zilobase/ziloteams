@@ -1,0 +1,62 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "ziloteams-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    { "pattern": "teams.zilobase.com", "custom_domain": true }
+  ],
+  "vars": {
+    "ENVIRONMENT": "production",
+    "PUBLIC_BASE_URL": "https://teams.zilobase.com",
+    "OTP_SENDER": "no-reply@zilobase.com"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ziloteams",
+      "database_id": "4e728e2c-af62-4f91-b1b4-0f17540da814",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    { "binding": "ATTACHMENTS", "bucket_name": "ziloteams-attachments" },
+    { "binding": "RELEASES", "bucket_name": "ziloteams-releases" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "CHANNELS", "class_name": "ChannelRoom" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ChannelRoom"] }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "CLEANUP_QUEUE", "queue": "ziloteams-cleanup" }
+    ],
+    "consumers": [
+      {
+        "queue": "ziloteams-cleanup",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        "dead_letter_queue": "ziloteams-cleanup-dlq",
+        "retry_delay": 60
+      }
+    ]
+  },
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "allowed_sender_addresses": ["no-reply@zilobase.com"]
+    }
+  ],
+  "triggers": { "crons": ["17 * * * *"] },
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.05 }
+  }
+}

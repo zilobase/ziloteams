@@ -1,0 +1,44 @@
+#!/bin/sh
+set -eu
+
+RELEASES_URL=${ZILOTEAMS_RELEASES_URL:-https://teams.zilobase.com/releases}
+INSTALL_DIR=${ZILOTEAMS_INSTALL_DIR:-"$HOME/.local/bin"}
+PUBLIC_KEY_B64='__RELEASE_PUBLIC_KEY_B64__'
+
+case "$(uname -s)" in
+  Darwin) platform=darwin ;;
+  Linux) platform=linux ;;
+  *) echo "ziloteams supports macOS and Linux" >&2; exit 1 ;;
+esac
+case "$(uname -m)" in
+  arm64|aarch64) architecture=arm64 ;;
+  x86_64|amd64) architecture=x64 ;;
+  *) echo "Unsupported CPU architecture" >&2; exit 1 ;;
+esac
+target="$platform-$architecture"
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/ziloteams.XXXXXX")
+trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
+
+curl -fsSL "$RELEASES_URL/latest.env" -o "$work_dir/latest.env"
+curl -fsSL "$RELEASES_URL/latest.env.sig" -o "$work_dir/latest.env.sig"
+if printf '%s' "$PUBLIC_KEY_B64" | base64 -d > "$work_dir/public.pem" 2>/dev/null; then :
+elif printf '%s' "$PUBLIC_KEY_B64" | base64 -D > "$work_dir/public.pem" 2>/dev/null; then :
+else echo "Could not decode the release verification key" >&2; exit 1
+fi
+openssl dgst -sha256 -verify "$work_dir/public.pem" -signature "$work_dir/latest.env.sig" "$work_dir/latest.env" >/dev/null
+
+value() { awk -v wanted="$1" '$1 == wanted { print $2 }' "$work_dir/latest.env"; }
+url=$(value "$target-url")
+expected=$(value "$target-sha256")
+version=$(value version)
+[ -n "$url" ] && [ -n "$expected" ] || { echo "No ziloteams release for $target" >&2; exit 1; }
+curl -fL "$url" -o "$work_dir/ziloteams"
+if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum "$work_dir/ziloteams" | awk '{print $1}')
+else actual=$(shasum -a 256 "$work_dir/ziloteams" | awk '{print $1}')
+fi
+[ "$actual" = "$expected" ] || { echo "ziloteams checksum verification failed" >&2; exit 1; }
+chmod 755 "$work_dir/ziloteams"
+mkdir -p "$INSTALL_DIR"
+mv "$work_dir/ziloteams" "$INSTALL_DIR/ziloteams"
+echo "Installed ziloteams $version to $INSTALL_DIR/ziloteams"
+case ":$PATH:" in *":$INSTALL_DIR:"*) ;; *) echo "Add $INSTALL_DIR to PATH to run ziloteams." ;; esac

@@ -1,0 +1,60 @@
+name: Release CLI
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - name: Check tag and package version
+        run: test "${GITHUB_REF_NAME#v}" = "$(node -p "require('./package.json').version")"
+      - run: npm run check
+      - name: Embed release public key
+        run: node scripts/write-release-key.mjs
+        env:
+          RELEASE_PUBLIC_KEY_PEM: ${{ secrets.RELEASE_PUBLIC_KEY_PEM }}
+      - run: npm run build:cli
+      - name: Create signed manifests and installer
+        run: node scripts/make-release.mjs
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_PRIVATE_KEY_PEM: ${{ secrets.RELEASE_PRIVATE_KEY_PEM }}
+          RELEASE_PUBLIC_KEY_PEM: ${{ secrets.RELEASE_PUBLIC_KEY_PEM }}
+      - name: Upload immutable binaries
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for file in release/ziloteams-*; do
+            npx wrangler r2 object put "ziloteams-releases/v${version}/$(basename "$file")" --file "$file" --remote
+          done
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Publish current signed manifests
+        run: |
+          npx wrangler r2 object put ziloteams-releases/latest.json --file release/latest.json --remote
+          npx wrangler r2 object put ziloteams-releases/latest.json.sig --file release/latest.json.sig --remote
+          npx wrangler r2 object put ziloteams-releases/latest.env --file release/latest.env --remote
+          npx wrangler r2 object put ziloteams-releases/latest.env.sig --file release/latest.env.sig --remote
+          npx wrangler r2 object put ziloteams-releases/install.sh --file release/install.sh --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ziloteams-${{ github.ref_name }}
+          path: release/
+          if-no-files-found: error
