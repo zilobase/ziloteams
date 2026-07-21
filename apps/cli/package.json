@@ -1,18 +1,25 @@
 {
   "name": "@ziloteams/cli",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
-  "bin": { "ziloteams": "src/index.ts" },
+  "bin": {
+    "ziloteams": "src/index.ts"
+  },
   "scripts": {
-    "dev": "vite-node src/index.ts",
+    "dev": "bun src/index.ts",
+    "test:tui": "bun src/ui.smoke.tsx",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@opentui/core": "0.4.4",
+    "@opentui/react": "0.4.4",
     "@ziloteams/contracts": "2.0.0",
+    "react": "19.2.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {
+    "@types/react": "19.2.0",
     "@types/ws": "^8.18.1"
   }
 }

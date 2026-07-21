@@ -1,6 +1,6 @@
 {
   "name": "ziloteams",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "build:cli": "node scripts/build-cli.mjs",
+    "build:cli": "bun scripts/build-cli.mjs",
     "check": "npm run typecheck && npm test",
     "dev:api": "npm run dev --workspace @ziloteams/api",
     "dev:cli": "npm run dev --workspace @ziloteams/cli",

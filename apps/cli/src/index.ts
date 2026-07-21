@@ -22,7 +22,9 @@ if (command === "--version" || command === "version") {
     await app.run();
   } catch (error) {
     await app.shutdown();
-    console.error(`ZiloTeams: ${error instanceof Error ? error.message : String(error)}`);
-    process.exitCode = 1;
+    if (!(error instanceof Error) || error.name !== "DialogCancelledError") {
+      console.error(`ZiloTeams: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    }
   }
 }

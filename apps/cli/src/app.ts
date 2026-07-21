@@ -14,9 +14,8 @@ import {
 } from "@ziloteams/contracts";
 import { ApiClient, ApiClientError } from "./api.js";
 import { type ClientConfig, ConfigStore } from "./config.js";
-import { choose, confirm, promptText } from "./prompts.js";
 import { RealtimeClient } from "./realtime.js";
-import { WorkspaceUi, type UiAction } from "./ui.js";
+import { DialogCancelledError, WorkspaceUi, type UiAction } from "./ui.js";
 
 type OnboardingIntent = "Create organization" | "Join organization";
 
@@ -34,19 +33,20 @@ export class ZiloTeamsApp {
   private shuttingDown = false;
 
   async run(): Promise<void> {
+    await this.ui.start();
+    this.ui.setActionHandler((action) => this.handleAction(action));
     this.config = await this.configStore.load(process.env.ZILOTEAMS_API_URL ?? DEFAULT_API_BASE_URL);
     this.api = new ApiClient(this.config.apiBaseUrl, this.config.sessionToken);
 
     let intent: OnboardingIntent | undefined;
     if (!this.config.sessionToken || !(await this.restoreSession())) {
-      console.clear();
-      console.log("ZiloTeams\nInvite-only workspaces from your terminal.\n");
-      intent = await choose<OnboardingIntent>("Get started", ["Create organization", "Join organization"]);
+      this.ui.setStatus("Sign in to continue");
+      intent = await this.ui.choose<OnboardingIntent>("Get started", ["Create organization", "Join organization"]);
       await this.signIn();
     }
 
     let organizations = await this.api.organizations();
-    if (organizations.length === 0) intent ??= await choose<OnboardingIntent>("Choose an action", ["Create organization", "Join organization"]);
+    if (organizations.length === 0) intent ??= await this.ui.choose<OnboardingIntent>("Choose an action", ["Create organization", "Join organization"]);
     if (intent === "Create organization") {
       const created = await this.createOrganization();
       organizations = [created, ...organizations];
@@ -58,8 +58,6 @@ export class ZiloTeamsApp {
     const preferred = organizations.find((item) => item.id === this.config.activeOrganizationId);
     this.organization = preferred ?? organizations[0]!;
     await this.openOrganization(this.organization);
-    this.ui.setActionHandler((action) => this.handleAction(action));
-    this.ui.start();
 
     await new Promise<void>((resolve) => { this.finished = resolve; });
   }
@@ -85,11 +83,13 @@ export class ZiloTeamsApp {
   }
 
   private async signIn(): Promise<void> {
-    const email = await promptText("Email");
+    const email = await this.ui.promptText("Email", { placeholder: "you@example.com" });
+    this.ui.setStatus("Sending verification code…");
     await this.api.requestOtp(email);
-    console.log("A six-digit verification code was sent to that address.");
-    const code = await promptText("Verification code");
-    const displayName = await promptText("Display name");
+    this.ui.setStatus("Verification code sent");
+    const code = await this.ui.promptText("Verification code", { placeholder: "Six-digit code" });
+    const displayName = await this.ui.promptText("Display name", { placeholder: "How teammates will see you" });
+    this.ui.setStatus("Verifying account…");
     const result = await this.api.verifyOtp(email, code, displayName);
     this.user = result.user;
     this.config.sessionToken = result.token;
@@ -98,13 +98,13 @@ export class ZiloTeamsApp {
   }
 
   private async createOrganization(): Promise<Organization> {
-    const name = await promptText("Organization name");
+    const name = await this.ui.promptText("Organization name", { placeholder: "Acme Inc." });
     const created = await this.api.createOrganization(name);
     return created.organization;
   }
 
   private async joinOrganization(): Promise<Organization> {
-    const code = await promptText("Invite code");
+    const code = await this.ui.promptText("Invite code", { placeholder: "XXXX-XXXX-XXXX-XXXX" });
     return this.api.redeemInvite(code);
   }
 
@@ -197,10 +197,7 @@ export class ZiloTeamsApp {
       case "settings": await this.settings(); break;
       case "invite": await this.invite(); break;
       case "delete": await this.deleteMessage(); break;
-      case "help": await this.modal(async () => {
-        console.log("/channels  Switch channel\n/switch    Switch, create, or join an organization\n/upload    Upload a file\n/settings  Personal and administration settings\n/invite    Invite a member (admins)\n/delete    Delete one of your recent messages\n\nMouse clicks and arrow/Enter navigation are supported.");
-        await promptText("Press Enter to return", { required: false });
-      }); break;
+      case "help": await this.ui.showMessage("Keyboard shortcuts", "/channels  Switch channel\n/switch    Switch, create, or join an organization\n/upload    Upload a file\n/settings  Personal and administration settings\n/invite    Invite a member (admins)\n/delete    Delete one of your recent messages\n\nCtrl+K switches workspace, Ctrl+L opens channels, Ctrl+U uploads, and Shift+Enter adds a line."); break;
       case "quit": await this.shutdown(); break;
     }
   }
@@ -209,7 +206,7 @@ export class ZiloTeamsApp {
     await this.modal(async () => {
       this.channels = await this.api.channels(this.organization.id);
       const active = this.channels.filter((item) => !item.archived);
-      const label = await choose("Channel", active.map((item) => `#${item.name}`));
+      const label = await this.ui.choose("Channel", active.map((item) => `#${item.name}`));
       const channel = active.find((item) => `#${item.name}` === label);
       if (channel) await this.openChannel(channel);
     });
@@ -219,7 +216,7 @@ export class ZiloTeamsApp {
     await this.modal(async () => {
       const organizations = await this.api.organizations();
       const labels = [...organizations.map((item) => item.name), "+ Create organization", "+ Join with invite code"];
-      const selected = await choose("Organization", labels);
+      const selected = await this.ui.choose("Organization", labels);
       if (selected === "+ Create organization") await this.openOrganization(await this.createOrganization());
       else if (selected === "+ Join with invite code") await this.openOrganization(await this.joinOrganization());
       else {
@@ -231,17 +228,18 @@ export class ZiloTeamsApp {
 
   private async uploadFile(): Promise<void> {
     await this.modal(async () => {
-      const filePath = await promptText("File path");
+      const filePath = await this.ui.promptText("File path", { placeholder: "~/Downloads/file.pdf" });
       if (!existsSync(filePath)) throw new Error("File not found");
       let lastPercent = -1;
       await this.api.upload(this.organization.id, this.channel.id, filePath, (sent, total) => {
         const percent = Math.floor(sent / total * 100);
         if (percent !== lastPercent) {
-          process.stdout.write(`\rUploading ${percent}%`);
+          this.ui.setProgress(percent);
           lastPercent = percent;
         }
       });
-      process.stdout.write("\rUpload complete.      \n");
+      this.ui.setProgress(undefined);
+      this.ui.setStatus("Upload complete");
     });
   }
 
@@ -285,10 +283,9 @@ export class ZiloTeamsApp {
   private async invite(): Promise<void> {
     if (this.organization.role !== "admin") throw new Error("Administrator access is required");
     await this.modal(async () => {
-      const email = await promptText("Invite email");
+      const email = await this.ui.promptText("Invite email", { placeholder: "teammate@example.com" });
       const invite = await this.api.createInvite(this.organization.id, email);
-      console.log(`\nInvite code for ${invite.email}:\n\n  ${invite.code}\n\nExpires ${new Date(invite.expiresAt).toLocaleString()}. The code is shown only once.`);
-      await promptText("Press Enter after copying it", { required: false });
+      await this.ui.showMessage("Invite created", `Invite code for ${invite.email}:\n\n${invite.code}\n\nExpires ${new Date(invite.expiresAt).toLocaleString()}. The code is shown only once.`);
     });
   }
 
@@ -297,9 +294,9 @@ export class ZiloTeamsApp {
       const eligible = this.ui.getMessages().filter((message) => !message.deletedAt && (message.senderId === this.user.id || this.organization.role === "admin")).slice(-20);
       if (eligible.length === 0) throw new Error("There are no messages you can delete");
       const labels = eligible.map((message) => `${message.id.slice(0, 8)} · ${message.senderName}: ${message.attachment?.filename ?? message.text ?? "attachment"}`);
-      const selected = await choose("Delete message", labels);
+      const selected = await this.ui.choose("Delete message", labels);
       const message = eligible[labels.indexOf(selected)];
-      if (message && await confirm("Delete this message permanently?")) {
+      if (message && await this.ui.confirm("Delete this message permanently?")) {
         await this.api.deleteMessage(this.organization.id, this.channel.id, message.id);
       }
     });
@@ -310,21 +307,21 @@ export class ZiloTeamsApp {
       const options = ["Change display name", "Change download directory"];
       if (this.organization.role === "admin") options.push("Rename organization", "Manage members", "Manage invites", "Manage channels");
       options.push("Sign out", "Back");
-      const selected = await choose("Settings", options);
+      const selected = await this.ui.choose("Settings", options);
       if (selected === "Change display name") {
-        const name = await promptText("Display name");
+        const name = await this.ui.promptText("Display name", { initialValue: this.user.displayName });
         this.user = await this.api.updateMe(name);
       } else if (selected === "Change download directory") {
-        this.config.downloadDirectory = await promptText("Download directory");
+        this.config.downloadDirectory = await this.ui.promptText("Download directory", { initialValue: this.config.downloadDirectory });
         await this.configStore.save(this.config);
       } else if (selected === "Rename organization") {
-        const name = await promptText("Organization name");
+        const name = await this.ui.promptText("Organization name", { initialValue: this.organization.name });
         await this.api.renameOrganization(this.organization.id, name);
         this.organization = { ...this.organization, name };
       } else if (selected === "Manage members") await this.manageMembers();
       else if (selected === "Manage invites") await this.manageInvites();
       else if (selected === "Manage channels") await this.manageChannels();
-      else if (selected === "Sign out" && await confirm("Sign out of ZiloTeams?")) {
+      else if (selected === "Sign out" && await this.ui.confirm("Sign out of ZiloTeams?")) {
         await this.api.logout();
         await this.configStore.clearSession(this.config);
         await this.shutdown();
@@ -335,61 +332,59 @@ export class ZiloTeamsApp {
   private async manageMembers(): Promise<void> {
     const members = await this.api.members(this.organization.id);
     const labels = members.map((member) => `${member.displayName} <${member.email}> [${member.role}]`);
-    const selected = await choose("Member", [...labels, "Back"]);
+    const selected = await this.ui.choose("Member", [...labels, "Back"]);
     if (selected === "Back") return;
     const member = members[labels.indexOf(selected)];
     if (!member) return;
-    const action = await choose("Action", [member.role === "admin" ? "Make member" : "Make admin", "Remove", "Back"]);
+    const action = await this.ui.choose("Action", [member.role === "admin" ? "Make member" : "Make admin", "Remove", "Back"]);
     if (action === "Make member") await this.api.updateMember(this.organization.id, member.userId, "member");
     else if (action === "Make admin") await this.api.updateMember(this.organization.id, member.userId, "admin");
-    else if (action === "Remove" && await confirm(`Remove ${member.displayName}?`)) await this.api.removeMember(this.organization.id, member.userId);
+    else if (action === "Remove" && await this.ui.confirm(`Remove ${member.displayName}?`)) await this.api.removeMember(this.organization.id, member.userId);
   }
 
   private async manageInvites(): Promise<void> {
     const invites = (await this.api.invites(this.organization.id)).filter((invite) => invite.status === "pending");
     if (invites.length === 0) {
-      console.log("No pending invites.");
-      await promptText("Press Enter to return", { required: false });
+      await this.ui.showMessage("Pending invites", "There are no pending invites.");
       return;
     }
     const labels = invites.map((invite) => `${invite.email} · expires ${new Date(invite.expiresAt).toLocaleDateString()}`);
-    const selected = await choose("Pending invite", [...labels, "Back"]);
+    const selected = await this.ui.choose("Pending invite", [...labels, "Back"]);
     if (selected === "Back") return;
     const invite = invites[labels.indexOf(selected)];
-    if (invite && await confirm(`Revoke the invite for ${invite.email}?`)) await this.api.revokeInvite(this.organization.id, invite.id);
+    if (invite && await this.ui.confirm(`Revoke the invite for ${invite.email}?`)) await this.api.revokeInvite(this.organization.id, invite.id);
   }
 
   private async manageChannels(): Promise<void> {
     this.channels = await this.api.channels(this.organization.id);
-    const selected = await choose("Channel management", ["Create channel", "Edit channel", "Back"]);
+    const selected = await this.ui.choose("Channel management", ["Create channel", "Edit channel", "Back"]);
     if (selected === "Create channel") {
-      const name = await promptText("Channel name");
-      const topic = await promptText("Topic", { required: false });
+      const name = await this.ui.promptText("Channel name");
+      const topic = await this.ui.promptText("Topic", { required: false });
       await this.api.createChannel(this.organization.id, name, topic);
     } else if (selected === "Edit channel") {
       const labels = this.channels.map((channel) => `#${channel.name}${channel.archived ? " [archived]" : ""}`);
-      const label = await choose("Channel", labels);
+      const label = await this.ui.choose("Channel", labels);
       const channel = this.channels[labels.indexOf(label)];
       if (!channel) return;
       const actions = ["Rename", channel.archived ? "Restore" : "Archive"];
       if (!channel.isDefault) actions.push("Delete");
       actions.push("Back");
-      const action = await choose("Action", actions);
-      if (action === "Rename") await this.api.updateChannel(this.organization.id, channel.id, { name: await promptText("Channel name") });
+      const action = await this.ui.choose("Action", actions);
+      if (action === "Rename") await this.api.updateChannel(this.organization.id, channel.id, { name: await this.ui.promptText("Channel name", { initialValue: channel.name }) });
       else if (action === "Archive") await this.api.updateChannel(this.organization.id, channel.id, { archived: true });
       else if (action === "Restore") await this.api.updateChannel(this.organization.id, channel.id, { archived: false });
-      else if (action === "Delete" && await confirm(`Permanently delete #${channel.name} and its history?`)) await this.api.deleteChannel(this.organization.id, channel.id);
+      else if (action === "Delete" && await this.ui.confirm(`Permanently delete #${channel.name} and its history?`)) await this.api.deleteChannel(this.organization.id, channel.id);
     }
     this.channels = await this.api.channels(this.organization.id);
   }
 
   private async modal(action: () => Promise<void>): Promise<void> {
-    this.ui.suspend();
-    try { await action(); } finally {
-      if (this.finished && !this.shuttingDown) {
-        this.ui.setWorkspace(this.organization, this.channel, this.channels);
-        this.ui.resume();
-      }
+    try {
+      await action();
+      if (this.finished && !this.shuttingDown) this.ui.setWorkspace(this.organization, this.channel, this.channels);
+    } catch (error) {
+      if (!(error instanceof DialogCancelledError)) throw error;
     }
   }
 

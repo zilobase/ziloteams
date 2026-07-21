@@ -19,9 +19,12 @@ jobs:
           cache: npm
       - uses: oven-sh/setup-bun@v2
       - run: npm ci
+      - name: Install all OpenTUI native targets
+        run: bun install --os="*" --cpu="*" @opentui/core@0.4.4
       - name: Check tag and package version
         run: test "${GITHUB_REF_NAME#v}" = "$(node -p "require('./package.json').version")"
       - run: npm run check
+      - run: npm run test:tui --workspace @ziloteams/cli
       - name: Embed release public key
         run: node scripts/write-release-key.mjs
         env:
