@@ -10,6 +10,7 @@ import {
 } from "@ziloteams/contracts";
 
 interface ConnectionAttachment {
+  version: 1;
   userId: string;
   displayName: string;
   sessionExpiresAt: number;
@@ -69,28 +70,28 @@ function mapMessage(row: MessageRow): Message {
   };
 }
 
+export function parseConnectionAttachment(value: unknown): ConnectionAttachment | null {
+  if (!isPlainObject(value)
+    || (value.version !== undefined && value.version !== 1)
+    || typeof value.userId !== "string"
+    || typeof value.displayName !== "string"
+    || typeof value.sessionExpiresAt !== "number"
+    || !Number.isFinite(value.sessionExpiresAt)
+    || typeof value.channelId !== "string") return null;
+  return {
+    version: 1,
+    userId: value.userId,
+    displayName: value.displayName,
+    sessionExpiresAt: value.sessionExpiresAt,
+    channelId: value.channelId
+  };
+}
+
 export class ChannelRoom extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
-      this.ctx.storage.sql.exec(`
-        CREATE TABLE IF NOT EXISTS messages (
-          id TEXT PRIMARY KEY,
-          client_message_id TEXT,
-          channel_id TEXT NOT NULL,
-          sender_id TEXT NOT NULL,
-          sender_name TEXT NOT NULL,
-          kind TEXT NOT NULL CHECK(kind IN ('text', 'attachment')),
-          text TEXT,
-          attachment_json TEXT,
-          created_at INTEGER NOT NULL,
-          deleted_at INTEGER
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS messages_client_id_idx
-          ON messages(sender_id, client_message_id)
-          WHERE client_message_id IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS messages_created_idx ON messages(created_at DESC);
-      `);
+      this.migrateSchema();
     });
   }
 
@@ -109,7 +110,7 @@ export class ChannelRoom extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    const attachment: ConnectionAttachment = { userId, displayName, sessionExpiresAt: expiresAt, channelId };
+    const attachment: ConnectionAttachment = { version: 1, userId, displayName, sessionExpiresAt: expiresAt, channelId };
     server.serializeAttachment(attachment);
     this.ctx.acceptWebSocket(server, [`user:${userId}`]);
 
@@ -193,8 +194,12 @@ export class ChannelRoom extends DurableObject<Env> {
   }
 
   override async webSocketMessage(socket: WebSocket, rawMessage: string | ArrayBuffer): Promise<void> {
-    const attachment = socket.deserializeAttachment() as ConnectionAttachment | null;
-    if (!attachment || attachment.sessionExpiresAt <= Date.now()) {
+    const attachment = this.connectionAttachment(socket);
+    if (!attachment) {
+      socket.close(4002, "Connection state invalid");
+      return;
+    }
+    if (attachment.sessionExpiresAt <= Date.now()) {
       socket.close(4001, "Session expired");
       return;
     }
@@ -240,14 +245,64 @@ export class ChannelRoom extends DurableObject<Env> {
     }
   }
 
-  override async webSocketClose(socket: WebSocket, code: number, reason: string): Promise<void> {
+  override async webSocketClose(socket: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {
     if (socket.readyState < WebSocket.CLOSING) socket.close(code, reason);
     this.broadcastPresence();
   }
 
-  override async webSocketError(_socket: WebSocket, error: unknown): Promise<void> {
+  override async webSocketError(socket: WebSocket, error: unknown): Promise<void> {
     console.error(JSON.stringify({ message: "channel_socket_error", error: error instanceof Error ? error.message : String(error) }));
+    if (socket.readyState < WebSocket.CLOSING) socket.close(1011, "Connection error");
     this.broadcastPresence();
+  }
+
+  private migrateSchema(): void {
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS _sql_schema_migrations (
+        id INTEGER PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      )
+    `);
+    const migration = this.ctx.storage.sql.exec<{ version: number }>(
+      "SELECT COALESCE(MAX(id), 0) AS version FROM _sql_schema_migrations"
+    ).one();
+    if (migration.version >= 1) return;
+
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        client_message_id TEXT,
+        channel_id TEXT NOT NULL,
+        sender_id TEXT NOT NULL,
+        sender_name TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('text', 'attachment')),
+        text TEXT,
+        attachment_json TEXT,
+        created_at INTEGER NOT NULL,
+        deleted_at INTEGER
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS messages_client_id_idx
+        ON messages(sender_id, client_message_id)
+        WHERE client_message_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS messages_created_idx ON messages(created_at DESC);
+    `);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO _sql_schema_migrations (id, applied_at) VALUES (?, ?)",
+      1,
+      Date.now()
+    );
+  }
+
+  private connectionAttachment(socket: WebSocket): ConnectionAttachment | null {
+    let raw: unknown;
+    try {
+      raw = socket.deserializeAttachment();
+    } catch {
+      return null;
+    }
+    const attachment = parseConnectionAttachment(raw);
+    if (attachment && (!isPlainObject(raw) || raw.version !== 1)) socket.serializeAttachment(attachment);
+    return attachment;
   }
 
   private insertMessage(row: MessageRow): void {
@@ -271,8 +326,10 @@ export class ChannelRoom extends DurableObject<Env> {
   private presence(): PresenceUser[] {
     const users = new Map<string, PresenceUser>();
     for (const socket of this.ctx.getWebSockets()) {
-      const value = socket.deserializeAttachment() as ConnectionAttachment | null;
-      if (value && value.sessionExpiresAt > Date.now()) {
+      const value = this.connectionAttachment(socket);
+      if (!value) {
+        socket.close(4002, "Connection state invalid");
+      } else if (value.sessionExpiresAt > Date.now()) {
         users.set(value.userId, { userId: value.userId, displayName: value.displayName });
       } else {
         socket.close(4001, "Session expired");
@@ -289,8 +346,9 @@ export class ChannelRoom extends DurableObject<Env> {
     const payload = JSON.stringify(event);
     for (const socket of this.ctx.getWebSockets()) {
       try {
-        const value = socket.deserializeAttachment() as ConnectionAttachment | null;
-        if (!value || value.sessionExpiresAt <= Date.now()) socket.close(4001, "Session expired");
+        const value = this.connectionAttachment(socket);
+        if (!value) socket.close(4002, "Connection state invalid");
+        else if (value.sessionExpiresAt <= Date.now()) socket.close(4001, "Session expired");
         else socket.send(payload);
       } catch (error) {
         console.warn(JSON.stringify({ message: "channel_broadcast_failed", error: error instanceof Error ? error.message : String(error) }));

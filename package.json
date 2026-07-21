@@ -1,6 +1,6 @@
 {
   "name": "ziloteams",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -10,12 +10,13 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "build:cli": "bun scripts/build-cli.mjs",
-    "check": "npm run typecheck && npm test",
+    "check": "npm run typecheck && npm test && npm run test:workers",
     "dev:api": "npm run dev --workspace @ziloteams/api",
     "dev:cli": "npm run dev --workspace @ziloteams/cli",
     "setup:local": "node scripts/setup-local.mjs",
     "secrets:production:rotate": "node scripts/rotate-production-secrets.mjs",
     "test": "vitest run",
+    "test:workers": "vitest run --config vitest.worker.config.ts",
     "test:watch": "vitest",
     "pretypecheck": "npm run types:worker",
     "typecheck": "tsc -p packages/contracts --noEmit && tsc -p apps/api --noEmit && tsc -p apps/cli --noEmit",

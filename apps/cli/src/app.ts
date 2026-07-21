@@ -195,9 +195,10 @@ export class ZiloTeamsApp {
       case "switch": await this.switchOrganization(); break;
       case "upload": await this.uploadFile(); break;
       case "settings": await this.settings(); break;
+      case "create-channel": await this.createChannel(); break;
       case "invite": await this.invite(); break;
       case "delete": await this.deleteMessage(); break;
-      case "help": await this.ui.showMessage("Keyboard shortcuts", "/channels  Switch channel\n/switch    Switch, create, or join an organization\n/upload    Upload a file\n/settings  Personal and administration settings\n/invite    Invite a member (admins)\n/delete    Delete one of your recent messages\n\nCtrl+K switches workspace, Ctrl+L opens channels, Ctrl+U uploads, and Shift+Enter adds a line."); break;
+      case "help": await this.ui.showMessage("Keyboard shortcuts", "/channels        Switch channel\n/create-channel  Create a channel (admins)\n/switch          Switch, create, or join an organization\n/upload          Upload a file\n/settings        Personal and administration settings\n/invite          Invite a member (admins)\n/delete          Delete one of your recent messages\n\nCtrl+K switches workspace, Ctrl+L opens channels, Ctrl+U uploads, and Shift+Enter adds a line."); break;
       case "quit": await this.shutdown(); break;
     }
   }
@@ -206,8 +207,10 @@ export class ZiloTeamsApp {
     await this.modal(async () => {
       this.channels = await this.api.channels(this.organization.id);
       const active = this.channels.filter((item) => !item.archived);
-      const label = await this.ui.choose("Channel", active.map((item) => `#${item.name}`));
-      const channel = active.find((item) => `#${item.name}` === label);
+      const labels = active.map((item) => `#${item.name}${item.id === this.channel.id ? "  ● active" : ""}`);
+      const activeIndex = Math.max(0, active.findIndex((item) => item.id === this.channel.id));
+      const label = await this.ui.choose("Channel", labels, labels[activeIndex]);
+      const channel = active[labels.indexOf(label)];
       if (channel) await this.openChannel(channel);
     });
   }
@@ -286,6 +289,18 @@ export class ZiloTeamsApp {
       const email = await this.ui.promptText("Invite email", { placeholder: "teammate@example.com" });
       const invite = await this.api.createInvite(this.organization.id, email);
       await this.ui.showMessage("Invite created", `Invite code for ${invite.email}:\n\n${invite.code}\n\nExpires ${new Date(invite.expiresAt).toLocaleString()}. The code is shown only once.`);
+    });
+  }
+
+  private async createChannel(): Promise<void> {
+    if (this.organization.role !== "admin") throw new Error("Administrator access is required");
+    await this.modal(async () => {
+      const name = await this.ui.promptText("Channel name", { placeholder: "project-updates" });
+      const topic = await this.ui.promptText("Channel topic", { required: false, placeholder: "What belongs in this channel?" });
+      const channel = await this.api.createChannel(this.organization.id, name, topic);
+      this.channels = await this.api.channels(this.organization.id);
+      await this.openChannel(channel);
+      this.ui.setStatus(`Created #${channel.name}`);
     });
   }
 

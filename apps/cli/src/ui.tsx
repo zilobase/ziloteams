@@ -1,8 +1,8 @@
-import { createCliRenderer, defaultTextareaKeyBindings, type CliRenderer, type SelectOption, type TextareaOptions, type TextareaRenderable } from "@opentui/core";
+import { createCliRenderer, defaultTextareaKeyBindings, type CliRenderer, type PasteEvent, type SelectOption, type TextareaOptions, type TextareaRenderable } from "@opentui/core";
 import { createRoot, useKeyboard, useTerminalDimensions, type Root } from "@opentui/react";
 import { useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Channel, Message, Organization, PresenceUser } from "@ziloteams/contracts";
-import { availableCommands, layoutSize, markMessageDeleted, upsertMessage } from "./ui-model.js";
+import { availableCommands, colorIndexForUsername, layoutSize, markMessageDeleted, parseFencedCode, upsertMessage } from "./ui-model.js";
 import { theme } from "./theme.js";
 
 export type UiAction =
@@ -13,7 +13,7 @@ export type UiAction =
 
 type Dialog =
   | { kind: "text"; title: string; label: string; initialValue: string; required: boolean; placeholder?: string }
-  | { kind: "select"; title: string; options: readonly string[] }
+  | { kind: "select"; title: string; options: readonly string[]; selectedIndex: number }
   | { kind: "confirm"; title: string }
   | { kind: "message"; title: string; body: string };
 
@@ -133,9 +133,10 @@ export class WorkspaceUi {
     return value;
   }
 
-  async choose<T extends string>(title: string, options: readonly T[]): Promise<T> {
+  async choose<T extends string>(title: string, options: readonly T[], selected?: T): Promise<T> {
     if (options.length === 0) throw new Error("No choices are available");
-    const value = await this.openDialog({ kind: "select", title, options });
+    const requestedIndex = selected === undefined ? 0 : options.indexOf(selected);
+    const value = await this.openDialog({ kind: "select", title, options, selectedIndex: Math.max(0, requestedIndex) });
     if (typeof value !== "string") throw new DialogCancelledError();
     return value as T;
   }
@@ -258,33 +259,47 @@ function Workspace({ state, store, width }: { state: UiSnapshot; store: Workspac
 
   return (
     <>
-      <box height={3} width="100%" backgroundColor={theme.panelRaised} paddingX={1} flexDirection="row" alignItems="center">
-        <text fg={theme.accent}><strong>ZiloTeams</strong></text>
-        <text fg={theme.muted}>  /  </text>
-        <text fg={theme.text}><strong>{organization.name}</strong></text>
-        <text fg={theme.muted}>  /  #{channel.name}</text>
+      <box height={1} width="100%" backgroundColor={theme.bar} flexDirection="row">
+        <box height={1} backgroundColor={theme.accentStrong} paddingX={1}>
+          <text fg={theme.onAccent}><strong>ZiloTeams</strong></text>
+        </box>
+        <box height={1} backgroundColor={theme.barSegment} paddingX={1}>
+          <text fg={theme.text}><strong>{organization.name}</strong></text>
+        </box>
+        <text fg={theme.muted}>  </text>
+        <text fg={theme.accent}><strong>#{channel.name}</strong></text>
+        {size === "wide" && <text fg={theme.subtle}>  {channel.topic || "No topic"}</text>}
         <box flexGrow={1} />
-        {state.progress !== undefined && <text fg={theme.accent}>Uploading {state.progress}%   </text>}
-        <text fg={connectionColor}>● {state.busy ? "Working…" : state.status}</text>
+        {state.progress !== undefined && <text fg={theme.peach}>{state.progress}%  </text>}
+        {size !== "compact" && <text fg={theme.teal}>{state.presence.length} active  </text>}
+        <box height={1} backgroundColor={theme.barSegment} paddingX={1}>
+          <text fg={theme.subtle}>{organization.role}</text>
+        </box>
+        <box height={1} paddingX={1}>
+          <text fg={connectionColor}>● <span fg={theme.text}>{state.busy ? "working" : state.status.toLowerCase()}</span></text>
+        </box>
       </box>
 
       <box flexGrow={1} width="100%" flexDirection="row">
         {showSidebar && <ChannelSidebar state={state} store={store} width={size === "wide" ? 25 : 22} />}
         <box flexGrow={1} flexDirection="column" minWidth={30}>
-          <box height={3} paddingX={1} flexDirection="column" justifyContent="center" border={["bottom"]} borderColor={theme.border}>
-            <text fg={theme.text}><strong>#{channel.name}</strong></text>
-            <text fg={theme.muted}>{channel.topic || "No topic yet"}{size !== "wide" ? `  ·  ${state.presence.length} active` : ""}</text>
-          </box>
           <MessageList messages={state.messages} store={store} />
           <Composer key={channel.id} state={state} store={store} />
         </box>
         {showDetails && <PresencePanel state={state} />}
       </box>
 
-      <box height={1} width="100%" backgroundColor={theme.panelRaised} paddingX={1} flexDirection="row">
-        <text fg={theme.muted}>/ commands   Ctrl+K workspace   Ctrl+L channels   Ctrl+U upload</text>
+      <box height={1} width="100%" backgroundColor={theme.bar} flexDirection="row">
+        <box height={1} backgroundColor={theme.accent} paddingX={1}>
+          <text fg={theme.onAccent}><strong>/ commands</strong></text>
+        </box>
+        <text fg={theme.subtle}>  ^K workspace   ^L channels</text>
+        {size !== "compact" && <text fg={theme.subtle}>   ^U upload</text>}
         <box flexGrow={1} />
-        <text fg={theme.muted}>{organization.role === "admin" ? "admin" : "member"}</text>
+        {size !== "compact" && <text fg={theme.muted}>{state.messages.length} messages  </text>}
+        <box height={1} backgroundColor={theme.barSegment} paddingX={1}>
+          <text fg={theme.text}>{organization.role}</text>
+        </box>
       </box>
     </>
   );
@@ -292,8 +307,8 @@ function Workspace({ state, store, width }: { state: UiSnapshot; store: Workspac
 
 function ChannelSidebar({ state, store, width }: { state: UiSnapshot; store: WorkspaceUi; width: number }) {
   return (
-    <box width={width} height="100%" backgroundColor={theme.panel} border={["right"]} borderColor={theme.border} padding={1} flexDirection="column">
-      <text fg={theme.muted}><strong>CHANNELS</strong></text>
+    <box width={width} height="100%" border={["right"]} borderColor={theme.border} paddingX={1} paddingTop={1} flexDirection="column">
+      <text fg={theme.subtle}><strong>channels</strong></text>
       <box height={1} />
       {state.channels.map((channel) => {
         const selected = channel.id === state.channel?.id;
@@ -302,22 +317,12 @@ function ChannelSidebar({ state, store, width }: { state: UiSnapshot; store: Wor
             key={channel.id}
             height={1}
             width="100%"
-            backgroundColor={selected ? theme.selected : theme.panel}
             onMouseDown={() => store.run({ type: "channel", channelId: channel.id })}
           >
-            <text fg={selected ? theme.accent : theme.text}>{selected ? "›" : " "} #{channel.name}</text>
+            <text fg={selected ? theme.accent : theme.subtle}>{selected ? "›" : " "} #{channel.name}</text>
           </box>
         );
       })}
-      <box flexGrow={1} />
-      {state.organization?.role === "admin" && (
-        <box height={1} onMouseDown={() => store.run({ type: "command", name: "invite" })}>
-          <text fg={theme.accentStrong}>＋ Invite people</text>
-        </box>
-      )}
-      <box height={1} onMouseDown={() => store.run({ type: "command", name: "settings" })}>
-        <text fg={theme.muted}>⚙ Settings</text>
-      </box>
     </box>
   );
 }
@@ -328,11 +333,9 @@ function MessageList({ messages, store }: { messages: Message[]; store: Workspac
       flexGrow={1}
       width="100%"
       stickyScroll
-      stickyStart="bottom"
       scrollY
-      paddingX={1}
-      contentOptions={{ flexDirection: "column", gap: 1 }}
-      verticalScrollbarOptions={{ visible: true }}
+      paddingX={2}
+      contentOptions={{ flexDirection: "column", paddingTop: 1 }}
     >
       {messages.length === 0 && (
         <box flexDirection="column" padding={2} gap={1}>
@@ -340,37 +343,70 @@ function MessageList({ messages, store }: { messages: Message[]; store: Workspac
           <text fg={theme.muted}>Send the first message to start the conversation.</text>
         </box>
       )}
-      {messages.map((message) => <MessageItem key={message.id} message={message} store={store} />)}
+      {messages.map((message, index) => (
+        <MessageItem
+          key={message.id}
+          message={message}
+          store={store}
+          separated={index > 0 && messages[index - 1]?.senderId !== message.senderId}
+        />
+      ))}
     </scrollbox>
   );
 }
 
-function MessageItem({ message, store }: { message: Message; store: WorkspaceUi }) {
-  const time = new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+function MessageItem({ message, store, separated }: { message: Message; store: WorkspaceUi; separated: boolean }) {
+  const time = new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
   const pending = message.id.startsWith("pending:");
-  return (
-    <box width="100%" flexDirection="column">
-      <box height={1} flexDirection="row">
-        <text fg={theme.text}><strong>{message.senderName}</strong></text>
-        <text fg={theme.muted}>  {time}{pending ? "  sending…" : ""}</text>
+  const code = message.text ? parseFencedCode(message.text) : null;
+  if (code && !message.deletedAt) {
+    return (
+      <box width="100%" marginTop={separated ? 1 : 0} flexDirection="column">
+        <box height={1} flexDirection="row">
+          <text fg={theme.muted}>{time} </text>
+          <text fg={senderColor(message.senderName)}><strong>{message.senderName}</strong></text>
+          <text fg={theme.muted}>: code{code.language ? ` · ${code.language}` : ""}</text>
+        </box>
+        <box marginLeft={6} border={["left"]} borderColor={theme.accentStrong} paddingLeft={1}>
+          <text fg={theme.subtle} wrapMode="none" selectable>{code.code}</text>
+        </box>
       </box>
+    );
+  }
+  return (
+    <box width="100%" minHeight={1} marginTop={separated ? 1 : 0} flexDirection="row">
+      <text fg={theme.muted}>{time} </text>
+      <text fg={senderColor(message.senderName)}><strong>{message.senderName}</strong></text>
+      <text fg={theme.muted}>: </text>
       {message.deletedAt
         ? <text fg={theme.muted}><em>Message deleted</em></text>
         : message.attachment
           ? (
             <box
-              border
-              borderStyle="rounded"
-              borderColor={theme.border}
-              paddingX={1}
               onMouseDown={() => store.run({ type: "attachment", attachmentId: message.attachment!.id })}
             >
-              <text fg={theme.accent}>↗ {message.attachment.filename}  <span fg={theme.muted}>{Math.ceil(message.attachment.size / 1024)} KiB</span></text>
+              <text fg={theme.accent}>↗ {message.attachment.filename} <span fg={theme.muted}>({Math.ceil(message.attachment.size / 1024)} KiB)</span></text>
             </box>
           )
-          : <text fg={pending ? theme.muted : theme.text} wrapMode="word">{message.text ?? ""}</text>}
+          : <text fg={pending ? theme.muted : theme.text} wrapMode="word">{message.text ?? ""}{pending ? " · sending" : ""}</text>}
     </box>
   );
+}
+
+const senderColors = [
+  theme.peach,
+  theme.teal,
+  theme.pink,
+  theme.lavender,
+  theme.success,
+  theme.accentStrong,
+  theme.accent,
+  theme.warning,
+  theme.danger
+] as const;
+
+function senderColor(name: string): string {
+  return senderColors[colorIndexForUsername(name, senderColors.length)]!;
 }
 
 const composerBindings: NonNullable<TextareaOptions["keyBindings"]> = [
@@ -408,7 +444,7 @@ function Composer({ state, store }: { state: UiSnapshot; store: WorkspaceUi }) {
   };
 
   return (
-    <box height={5} width="100%" border={["top"]} borderColor={theme.border} backgroundColor={theme.panel} paddingX={1} flexDirection="column">
+    <box height={5} width="100%" border={["top"]} borderColor={theme.border} paddingX={2} flexDirection="column">
       {commands.length > 0 && (
         <box
           position="absolute"
@@ -445,6 +481,13 @@ function Composer({ state, store }: { state: UiSnapshot; store: WorkspaceUi }) {
         selectionBg={theme.selected}
         wrapMode="word"
         keyBindings={composerBindings}
+        onPaste={(event: PasteEvent) => {
+          const pasted = new TextDecoder().decode(event.bytes).replace(/\r\n?/g, "\n");
+          if (!pasted.includes("\n") || pasted.trimStart().startsWith("```")) return;
+          event.preventDefault();
+          const code = pasted.endsWith("\n") ? pasted.slice(0, -1) : pasted;
+          editor.current?.insertText(`\`\`\`\n${code}\n\`\`\``);
+        }}
         onContentChange={() => {
           const next = editor.current?.plainText ?? "";
           setValue(next.slice(0, 4_000));
@@ -545,6 +588,7 @@ function SelectDialog({ dialog, store }: { dialog: Extract<Dialog, { kind: "sele
       flexGrow={1}
       width="100%"
       options={options}
+      selectedIndex={dialog.selectedIndex}
       showDescription={false}
       showScrollIndicator
       wrapSelection

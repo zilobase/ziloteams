@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Message } from "@ziloteams/contracts";
-import { availableCommands, layoutSize, markMessageDeleted, upsertMessage } from "./ui-model.js";
+import { availableCommands, colorIndexForUsername, layoutSize, markMessageDeleted, parseFencedCode, upsertMessage } from "./ui-model.js";
 
 const message = (overrides: Partial<Message> = {}): Message => ({
   id: "message-1",
@@ -19,13 +19,27 @@ const message = (overrides: Partial<Message> = {}): Message => ({
 describe("OpenTUI view model", () => {
   it("keeps admin commands out of member palettes", () => {
     expect(availableCommands("member").map((item) => item.name)).not.toContain("invite");
+    expect(availableCommands("member").map((item) => item.name)).not.toContain("create-channel");
     expect(availableCommands("admin", "/inv").map((item) => item.name)).toEqual(["invite"]);
+    expect(availableCommands("admin", "/create").map((item) => item.name)).toEqual(["create-channel"]);
   });
 
   it("selects responsive layouts at stable breakpoints", () => {
     expect(layoutSize(60)).toBe("compact");
     expect(layoutSize(72)).toBe("medium");
     expect(layoutSize(100)).toBe("wide");
+  });
+
+  it("assigns username colors deterministically on the client", () => {
+    expect(colorIndexForUsername("Taylor", 9)).toBe(colorIndexForUsername("taylor", 9));
+    expect(colorIndexForUsername("Taylor", 9)).toBeGreaterThanOrEqual(0);
+    expect(colorIndexForUsername("Taylor", 9)).toBeLessThan(9);
+  });
+
+  it("recognizes complete fenced code blocks", () => {
+    expect(parseFencedCode("```ts\nconst ready = true;\n```"))
+      .toEqual({ language: "ts", code: "const ready = true;" });
+    expect(parseFencedCode("ordinary message")).toBeNull();
   });
 
   it("replaces optimistic messages by client ID", () => {

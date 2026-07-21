@@ -121,7 +121,7 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     let response: Response;
     if (url.pathname === "/health") {
-      response = Response.json({ ok: true, service: "ziloteams", version: "2.0.0" });
+      response = Response.json({ ok: true, service: "ziloteams", version: "2.2.0" });
     } else if (url.pathname.startsWith("/api/v1/")) {
       response = await routeApi(request, env);
     } else if (url.pathname.startsWith("/files/")) {
